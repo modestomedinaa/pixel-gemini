@@ -201,8 +201,11 @@ async def check_offer(update: Update,
         return
     except Exception as exc:
         logger.exception("Unexpected error in check_offer for chat %s", chat_id)
+        import traceback
+        tb = traceback.format_exc()
         await update.message.reply_text(
-            f"❌ An unexpected error occurred: {exc}"
+            f"❌ Error: {exc}\n\n```\n{tb[-500:]}\n```",
+            parse_mode="Markdown"
         )
         return
 
