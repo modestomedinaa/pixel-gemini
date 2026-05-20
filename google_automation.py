@@ -154,9 +154,42 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str, totp_key: 
                 code = totp.now()
                 logger.info("Generated TOTP code: %s", code)
 
-                # Wait for 2FA input field
                 time.sleep(3)
+                _check_captcha(driver)
                 driver.save_screenshot("debug_05_2fa_page.png")
+
+                # First, check if Google is showing phone prompt ("Verify it's you")
+                try:
+                    body_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+                    if "tap yes" in body_text or "phone" in body_text or "notification" in body_text:
+                        logger.info("Phone verification prompt detected, clicking 'Try another way'...")
+                        # Click "Try another way" / "More ways to verify"
+                        for link_text in ["Try another way", "More ways to verify", "Another way"]:
+                            try:
+                                elem = driver.find_element(By.XPATH, f"//*[contains(text(), '{link_text}')]")
+                                elem.click()
+                                time.sleep(2)
+                                logger.info("Clicked: %s", link_text)
+                                break
+                            except Exception:
+                                continue
+                        time.sleep(2)
+                        driver.save_screenshot("debug_05b_after_try_another.png")
+
+                        # Now select "Google Authenticator" or "Authenticator app"
+                        for auth_text in ["Authenticator", "Google Authenticator", "authenticator app"]:
+                            try:
+                                elem = driver.find_element(By.XPATH, f"//*[contains(text(), '{auth_text}')]")
+                                elem.click()
+                                time.sleep(2)
+                                logger.info("Selected: %s", auth_text)
+                                break
+                            except Exception:
+                                continue
+                        time.sleep(2)
+                        driver.save_screenshot("debug_05c_authenticator_selected.png")
+                except Exception as e:
+                    logger.info("No phone prompt detected: %s", e)
 
                 # Try multiple selectors for 2FA input
                 totp_selectors = [
