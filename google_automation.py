@@ -354,6 +354,13 @@ def _check_google_one(driver):
             logger.info("Navigating to %s", url)
             driver.get(url)
             time.sleep(5)
+            
+            # Skip 404 pages immediately to avoid clicking links on error pages
+            html_content = (driver.page_source or "").lower()
+            if "ошибка 404" in html_content or "error 404" in html_content or "404" in driver.title:
+                logger.warning("404 Page detected at %s. Skipping url...", url)
+                continue
+
             for s in ('[aria-label="Accept all"]', 'button[jsname="higCR"]'):
                 try:
                     driver.find_element(By.CSS_SELECTOR, s).click()
