@@ -218,6 +218,7 @@ async def check_offer(update: Update,
         offer_link = check_gemini_offer(
             session["email"],
             session["password"],
+            device,
             session.get("totp_key", ""),
         )
     except GoogleAutomationError as exc:
