@@ -9,9 +9,11 @@ Commands:
   /status       – Show current session status and device profile
 """
 
+import asyncio
 import logging
 import os
 import sys
+import requests as _requests
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -25,12 +27,34 @@ from telegram.ext import (
 
 import config
 from device_simulator import create_device_profile
-from emulator_automation import check_gemini_offer_emulator as check_gemini_offer
-from google_automation import GoogleAutomationError
+from google_automation import check_gemini_offer, GoogleAutomationError
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=config.LOG_LEVEL, format=config.LOG_FORMAT)
 logger = logging.getLogger(__name__)
+
+
+def _reset_webhook(token: str) -> None:
+    """Delete any webhook and drop pending updates before polling starts."""
+    url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=true"
+    try:
+        r = _requests.get(url, timeout=10)
+        logger.info("deleteWebhook: %s", r.json())
+    except Exception as e:
+        logger.warning("Could not reset webhook: %s", e)
+
+
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle telegram errors — especially 409 Conflict."""
+    from telegram.error import Conflict, NetworkError
+    err = context.error
+    if isinstance(err, Conflict):
+        logger.warning("409 Conflict detected — waiting 15s for other instance to die...")
+        await asyncio.sleep(15)
+    elif isinstance(err, NetworkError):
+        logger.warning("Network error: %s — retrying...", err)
+    else:
+        logger.exception("Unhandled error: %s", err, exc_info=err)
 
 # ── Conversation states ───────────────────────────────────────────────────────
 AWAIT_EMAIL, AWAIT_PASSWORD, AWAIT_TOTP = range(3)
@@ -296,7 +320,12 @@ def main() -> None:
         )
         sys.exit(1)
 
+    # Kill any lingering webhook / stale getUpdates before we start polling
+    _reset_webhook(token)
+    import time; time.sleep(3)  # grace period for other instances to stop
+
     app = Application.builder().token(token).build()
+    app.add_error_handler(_error_handler)
 
     # /login conversation
     login_conv = ConversationHandler(
@@ -322,7 +351,10 @@ def main() -> None:
     app.add_handler(CommandHandler("status", status))
 
     logger.info("Bot is running. Press Ctrl-C to stop.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":
