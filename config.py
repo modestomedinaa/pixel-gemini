@@ -55,11 +55,11 @@ GEMINI_OFFER_KEYWORDS = [
 WEBDRIVER_TIMEOUT = 30          # seconds – explicit wait
 IMPLICIT_WAIT = 10              # seconds
 PAGE_LOAD_TIMEOUT = 60          # seconds
-HEADLESS = True                 # always headless on Replit
+HEADLESS = False                # visible browser for debugging
 
 # ── Session storage ───────────────────────────────────────────────────────────
 # In-memory dict keyed by Telegram chat_id.
-# Values: {"email": ..., "password": ..., "device": <DeviceProfile>, "offer_link": ...}
+# Values: {"email": ..., "password": ..., "totp_key": ..., "device": <DeviceProfile>, "offer_link": ...}
 SESSION_STORE: dict = {}
 
 # ── Logging ───────────────────────────────────────────────────────────────────

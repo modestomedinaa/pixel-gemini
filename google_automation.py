@@ -23,6 +23,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
+import pyotp
+
 import config
 from device_simulator import DeviceProfile
 
@@ -76,7 +78,7 @@ def _wait_for(driver: webdriver.Chrome, by: str, value: str,
     )
 
 
-def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
+def _gmail_login(driver: webdriver.Chrome, email: str, password: str, totp_key: str = "") -> bool:
     """
     Perform Gmail / Google account login.
 
@@ -91,20 +93,82 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                                 'input[type="email"]')
         email_field.clear()
         email_field.send_keys(email)
+        driver.save_screenshot("debug_01_email.png")
 
         next_btn = _wait_for(driver, By.ID, "identifierNext")
         next_btn.click()
-        time.sleep(2)
+        time.sleep(3)
+        driver.save_screenshot("debug_02_after_email.png")
 
         # ── Password step ─────────────────────────────────────────────────────
         password_field = _wait_for(driver, By.CSS_SELECTOR,
                                    'input[type="password"]')
         password_field.clear()
         password_field.send_keys(password)
+        driver.save_screenshot("debug_03_password.png")
 
         pw_next = _wait_for(driver, By.ID, "passwordNext")
         pw_next.click()
-        time.sleep(3)
+        time.sleep(4)
+        driver.save_screenshot("debug_04_after_password.png")
+
+        # ── 2FA / TOTP step ──────────────────────────────────────────────────
+        if totp_key:
+            try:
+                # Clean up the key (remove spaces)
+                clean_key = totp_key.replace(" ", "").upper()
+                totp = pyotp.TOTP(clean_key)
+                code = totp.now()
+                logger.info("Generated TOTP code: %s", code)
+
+                # Wait for 2FA input field
+                time.sleep(3)
+                driver.save_screenshot("debug_05_2fa_page.png")
+
+                # Try multiple selectors for 2FA input
+                totp_selectors = [
+                    'input[type="tel"]',
+                    'input[id*="totp"]',
+                    'input[id*="code"]',
+                    'input[aria-label*="code" i]',
+                    'input[aria-label*="Enter" i]',
+                    'input[autocomplete="one-time-code"]',
+                ]
+                totp_field = None
+                for sel in totp_selectors:
+                    try:
+                        totp_field = _wait_for(driver, By.CSS_SELECTOR, sel, timeout=5)
+                        logger.info("Found 2FA field: %s", sel)
+                        break
+                    except TimeoutException:
+                        continue
+
+                if totp_field:
+                    totp_field.clear()
+                    totp_field.send_keys(code)
+                    driver.save_screenshot("debug_06_totp_entered.png")
+                    time.sleep(1)
+
+                    # Click Next/Verify
+                    try:
+                        totp_next = _wait_for(driver, By.ID, "totpNext", timeout=5)
+                        totp_next.click()
+                    except Exception:
+                        try:
+                            driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
+                        except Exception:
+                            driver.find_element(By.CSS_SELECTOR, 'button').click()
+                    time.sleep(3)
+                    driver.save_screenshot("debug_07_after_totp.png")
+                    logger.info("TOTP submitted")
+                else:
+                    logger.warning("No 2FA input field found on page")
+                    # Check for other 2FA methods
+                    page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+                    logger.info("2FA page text: %s", page_text[:200])
+            except Exception as exc:
+                logger.warning("TOTP step error (continuing): %s", exc)
+                driver.save_screenshot("debug_totp_error.png")
 
         # ── Verify login ──────────────────────────────────────────────────────
         current_url = driver.current_url
@@ -139,7 +203,14 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                         email, current_url)
             return True
 
+        driver.save_screenshot("debug_login_failed.png")
         logger.warning("Unexpected URL after login: %s", current_url)
+        # Log page text for debugging
+        try:
+            body_text = driver.find_element(By.TAG_NAME, "body").text[:300]
+            logger.info("Page text: %s", body_text)
+        except Exception:
+            pass
         return False
 
     except TimeoutException as exc:
@@ -256,7 +327,8 @@ class GoogleAutomationError(Exception):
 
 
 def check_gemini_offer(email: str, password: str,
-                       device: DeviceProfile) -> Optional[str]:
+                       device: DeviceProfile,
+                       totp_key: str = "") -> Optional[str]:
     """
     Main entry point.
 
@@ -271,7 +343,7 @@ def check_gemini_offer(email: str, password: str,
         logger.info("Starting WebDriver for session %s", device.session_id)
         driver = _build_driver(device)
 
-        logged_in = _gmail_login(driver, email, password)
+        logged_in = _gmail_login(driver, email, password, totp_key)
         if not logged_in:
             raise GoogleAutomationError(
                 "Login failed – please check your credentials."

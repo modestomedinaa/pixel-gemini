@@ -32,7 +32,7 @@ logging.basicConfig(level=config.LOG_LEVEL, format=config.LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 # ── Conversation states ───────────────────────────────────────────────────────
-AWAIT_EMAIL, AWAIT_PASSWORD = range(2)
+AWAIT_EMAIL, AWAIT_PASSWORD, AWAIT_TOTP = range(3)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -90,10 +90,33 @@ async def login_email(update: Update,
 
 async def login_password(update: Update,
                          context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Store credentials, generate a new device profile, and finish."""
-    chat_id = update.effective_chat.id
+    """Store password, then ask for TOTP key (optional)."""
     password = update.message.text.strip()
+    context.user_data["pending_password"] = password
+
+    # Delete the message containing the password for security
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    await update.message.reply_text(
+        "🔐 Password saved.\n\n"
+        "Now enter your *TOTP key* (from Google Authenticator setup).\n"
+        "This is the 32-character secret key.\n\n"
+        "_Type `skip` if you don't have 2FA enabled._",
+        parse_mode="Markdown",
+    )
+    return AWAIT_TOTP
+
+
+async def login_totp(update: Update,
+                     context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Store TOTP key, create device profile, and finish."""
+    chat_id = update.effective_chat.id
+    totp_input = update.message.text.strip()
     email = context.user_data.pop("pending_email", "")
+    password = context.user_data.pop("pending_password", "")
 
     session = _get_session(chat_id)
     session["email"] = email
@@ -101,7 +124,16 @@ async def login_password(update: Update,
     session["device"] = create_device_profile()
     session["offer_link"] = None
 
-    # Delete the message containing the password for security
+    if totp_input.lower() == "skip":
+        session["totp_key"] = ""
+        totp_msg = "❌ No 2FA"
+    else:
+        # Clean up: remove spaces, take only valid base32 chars
+        clean = "".join(c.upper() for c in totp_input if c.isalnum())
+        session["totp_key"] = clean
+        totp_msg = "✅ 2FA enabled"
+
+    # Delete TOTP message for security
     try:
         await update.message.delete()
     except Exception:
@@ -112,6 +144,7 @@ async def login_password(update: Update,
         text=(
             "✅ *Credentials saved* and a new Pixel 10 Pro device profile has "
             "been created for this session.\n\n"
+            + totp_msg + "\n\n"
             + session["device"].summary()
             + "\n\nUse /check\\_offer to search for the Gemini Pro offer."
         ),
@@ -160,6 +193,7 @@ async def check_offer(update: Update,
             session["email"],
             session["password"],
             device,
+            session.get("totp_key", ""),
         )
     except GoogleAutomationError as exc:
         await update.message.reply_text(f"❌ *Error:* {exc}", parse_mode="Markdown")
@@ -227,6 +261,7 @@ async def status(update: Update,
 
     email = session.get("email", "—")
     has_creds = bool(session.get("email") and session.get("password"))
+    has_totp = bool(session.get("totp_key"))
     offer_link = session.get("offer_link")
     device = session.get("device")
 
@@ -234,6 +269,7 @@ async def status(update: Update,
         "📊 *Session Status*\n",
         f"Account: `{email}`",
         f"Credentials loaded: {'✅' if has_creds else '❌'}",
+        f"2FA (TOTP): {'✅' if has_totp else '❌'}",
         f"Offer link captured: {'✅' if offer_link else '❌'}",
     ]
 
@@ -268,6 +304,9 @@ def main() -> None:
             ],
             AWAIT_PASSWORD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, login_password)
+            ],
+            AWAIT_TOTP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, login_totp)
             ],
         },
         fallbacks=[CommandHandler("cancel", login_cancel)],
