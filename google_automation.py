@@ -397,26 +397,75 @@ def check_gemini_offer(email: str, password: str,
                        device: DeviceProfile,
                        totp_key: str = "") -> Optional[str]:
     """
-    Main entry point.
+    HYBRID MODE: Opens visible browser, user logs in manually,
+    then bot auto-navigates Google One and extracts the offer link.
 
-    Logs into *email* / *password* using the supplied *device* profile,
-    navigates to Google One, and returns the Gemini Pro offer link (or None).
-
-    Raises :class:`GoogleAutomationError` if the driver cannot be started or
-    the login step fails with an error.
+    The email/password/totp are NOT used for automated login -
+    they're kept for session tracking only.
     """
     driver: Optional[webdriver.Chrome] = None
     try:
-        logger.info("Starting WebDriver for session %s", device.session_id)
+        logger.info("Starting WebDriver for session %s (HYBRID MODE)", device.session_id)
         driver = _build_driver(device)
 
-        logged_in = _gmail_login(driver, email, password, totp_key)
+        # Go directly to Google One - user will be prompted to log in
+        logger.info("Opening Google One - please log in manually in the browser window")
+        driver.get(config.GOOGLE_ONE_URL)
+        driver.save_screenshot("manual_login_start.png")
+
+        # Wait for manual login (up to 5 minutes)
+        logger.info("Waiting up to 300s for manual login...")
+        logged_in = False
+        for i in range(60):
+            time.sleep(5)
+            try:
+                current_url = driver.current_url
+                parsed = urlparse(current_url)
+                hostname = parsed.hostname or ""
+
+                # Check if we're past the login page
+                if hostname == "one.google.com" and "signin" not in current_url.lower():
+                    # Verify we're actually logged in by checking for account content
+                    try:
+                        body = driver.find_element(By.TAG_NAME, "body").text.lower()
+                        if "sign in" not in body and "login" not in body:
+                            logged_in = True
+                            logger.info("Manual login detected! URL: %s", current_url)
+                            break
+                    except Exception:
+                        pass
+                elif hostname == "myaccount.google.com":
+                    logged_in = True
+                    logger.info("Login detected via myaccount redirect")
+                    # Navigate back to Google One
+                    driver.get(config.GOOGLE_ONE_URL)
+                    time.sleep(3)
+                    break
+            except Exception:
+                pass
+            if i % 6 == 0:
+                logger.info("Still waiting for login... (%ds)", (i+1)*5)
+
         if not logged_in:
+            driver.save_screenshot("manual_login_timeout.png")
             raise GoogleAutomationError(
-                "Login failed – please check your credentials."
+                "Login timeout – please log in within 5 minutes."
             )
 
+        driver.save_screenshot("logged_in.png")
+        logger.info("User logged in! Searching for Gemini offer...")
+
+        # Now find the offer
         offer_link = _navigate_google_one(driver)
+
+        # Keep browser open for 60s so user can see result
+        if offer_link:
+            logger.info("Offer found, keeping browser open 60s...")
+            time.sleep(60)
+        else:
+            logger.info("No offer found, keeping browser open 120s for manual check...")
+            time.sleep(120)
+
         return offer_link
 
     finally:
