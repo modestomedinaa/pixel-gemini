@@ -78,6 +78,37 @@ def _wait_for(driver: webdriver.Chrome, by: str, value: str,
     )
 
 
+def _check_captcha(driver: webdriver.Chrome) -> bool:
+    """Detect if Google is showing a captcha. If yes, wait for manual solve."""
+    captcha_indicators = [
+        'captcha', 'CAPTCHA', 'verify', 'Verify',
+        'unusual traffic', 'robot', 'automated',
+        'type the characters', 'Type the text',
+        'confirm you are not a robot',
+    ]
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+        for indicator in captcha_indicators:
+            if indicator.lower() in body_text.lower():
+                logger.warning("CAPTCHA detected! Indicator: %s", indicator)
+                driver.save_screenshot("captcha_detected.png")
+                logger.info("Waiting 120s for manual captcha solve...")
+                time.sleep(120)
+                driver.save_screenshot("captcha_after_wait.png")
+                return True
+        captcha_imgs = driver.find_elements(By.CSS_SELECTOR, 'img[src*="captcha"], img[alt*="captcha" i]')
+        if captcha_imgs:
+            logger.warning("CAPTCHA image found!")
+            driver.save_screenshot("captcha_detected.png")
+            logger.info("Waiting 120s for manual captcha solve...")
+            time.sleep(120)
+            driver.save_screenshot("captcha_after_wait.png")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _gmail_login(driver: webdriver.Chrome, email: str, password: str, totp_key: str = "") -> bool:
     """
     Perform Gmail / Google account login.
@@ -98,6 +129,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str, totp_key: 
         next_btn = _wait_for(driver, By.ID, "identifierNext")
         next_btn.click()
         time.sleep(3)
+        _check_captcha(driver)
         driver.save_screenshot("debug_02_after_email.png")
 
         # ── Password step ─────────────────────────────────────────────────────
@@ -110,6 +142,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str, totp_key: 
         pw_next = _wait_for(driver, By.ID, "passwordNext")
         pw_next.click()
         time.sleep(4)
+        _check_captcha(driver)
         driver.save_screenshot("debug_04_after_password.png")
 
         # ── 2FA / TOTP step ──────────────────────────────────────────────────
@@ -159,6 +192,7 @@ def _gmail_login(driver: webdriver.Chrome, email: str, password: str, totp_key: 
                         except Exception:
                             driver.find_element(By.CSS_SELECTOR, 'button').click()
                     time.sleep(3)
+                    _check_captcha(driver)
                     driver.save_screenshot("debug_07_after_totp.png")
                     logger.info("TOTP submitted")
                 else:
