@@ -75,6 +75,46 @@ def _do_login(driver, email, password, totp_key=""):
             code = pyotp.TOTP(totp_key.replace(" ", "").upper()).now()
             logger.info("TOTP: %s", code)
             time.sleep(3)
+
+            # --- Resilient 2FA "Try Another Way" Switching ---
+            # If Google defaults to sending phone prompt notification and there is no direct input field,
+            # we need to click "Try another way" (Другой способ) and select the Authenticator code option.
+            input_found = False
+            for sel in ['input[type="tel"]', 'input[id*="totp"]', 'input[id*="code"]',
+                       'input[autocomplete="one-time-code"]']:
+                if driver.find_elements(By.CSS_SELECTOR, sel):
+                    input_found = True
+                    break
+
+            if not input_found:
+                logger.info("No direct TOTP input field found. Attempting to switch verification method...")
+                # 1. Search and click "Try another way" / "Другой способ" / "Другие способы"
+                way_clicked = False
+                for btn_text in ["Try another way", "Другой способ", "Другие способы"]:
+                    try:
+                        btn = driver.find_element(By.XPATH, f"//*[contains(text(), '{btn_text}')]")
+                        if btn.is_displayed():
+                            btn.click()
+                            logger.info("Clicked '%s' link", btn_text)
+                            time.sleep(3)
+                            way_clicked = True
+                            break
+                    except NoSuchElementException:
+                        continue
+
+                # 2. Select Authenticator option in the menu
+                if way_clicked:
+                    for opt_text in ["Authenticator", "приложения Google Authenticator", "приложения"]:
+                        try:
+                            opt = driver.find_element(By.XPATH, f"//*[contains(text(), '{opt_text}')]")
+                            opt.click()
+                            logger.info("Selected '%s' option from 2FA list", opt_text)
+                            time.sleep(4)
+                            break
+                        except NoSuchElementException:
+                            continue
+
+            # Standard TOTP entering loop
             for sel in ['input[type="tel"]', 'input[id*="totp"]', 'input[id*="code"]',
                        'input[autocomplete="one-time-code"]']:
                 try:
@@ -122,9 +162,192 @@ def _find_offer_link(driver):
     return None
 
 
+TRIAL_KEYWORDS = [
+    # English
+    "try for free", "start trial", "get started", "try free",
+    "claim", "activate", "redeem", "get offer", "start free",
+    "free trial", "get gemini", "upgrade", "try gemini",
+    "get 12 month", "get 1 year",
+    # Russian
+    "попробовать бесплатно", "начать пробный", "получить предложение",
+    "активировать", "получить бесплатно", "попробовать", "начать",
+    "бесплатно", "получить",
+]
+
+
+OFFER_URL_PATTERNS = [
+    "payments.google.com",
+    "play.google.com/store/account",
+    "one.google.com/checkout",
+    "one.google.com/offers",
+    "store.google.com",
+]
+
+
+def _find_checkout_url_after_clicks(driver) -> Optional[str]:
+    # 1. Check if the current URL is already a checkout page
+    cur_url = driver.current_url
+    if any(pat in cur_url for pat in OFFER_URL_PATTERNS):
+        logger.info("Current URL is already a checkout page: %s", cur_url)
+        return cur_url
+
+    # 2. Try the static anchor check first
+    link = _find_offer_link(driver)
+    if link:
+        logger.info("Found direct offer link via static search: %s", link)
+        return link
+
+    # 3. Find potential trial buttons or links that might launch the flow
+    selectors = [
+        "button", 
+        "a", 
+        "[role='button']", 
+        "div[class*='btn']", 
+        "div[class*='button']",
+        "span[class*='btn']",
+        "span[class*='button']"
+    ]
+    
+    candidates = []
+    seen = set()
+    
+    for selector in selectors:
+        try:
+            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            for el in elements:
+                try:
+                    if el in seen:
+                        continue
+                    if not el.is_displayed():
+                        continue
+                    text = (el.text or "").lower()
+                    aria_label = (el.get_attribute("aria-label") or "").lower()
+                    combined = text + " " + aria_label
+                    if any(kw in combined for kw in TRIAL_KEYWORDS):
+                        candidates.append(el)
+                        seen.add(el)
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    logger.info("Found %d candidate offer buttons/links", len(candidates))
+    if not candidates:
+        return None
+
+    original_handle = driver.current_window_handle
+
+    for i, el in enumerate(candidates):
+        try:
+            text = (el.text or el.get_attribute("aria-label") or "Element").strip()
+            logger.info("Clicking candidate %d/%d: '%s'", i+1, len(candidates), text)
+            
+            pre_handles = driver.window_handles
+            
+            # Click candidate
+            try:
+                el.click()
+            except Exception:
+                try:
+                    driver.execute_script("arguments[0].click();", el)
+                except Exception as click_err:
+                    logger.warning("Failed to click candidate %d: %s", i+1, click_err)
+                    continue
+
+            # Wait for redirect/navigation or modal to load
+            time.sleep(6)
+
+            # Check if any new tab/window was opened
+            post_handles = driver.window_handles
+            if len(post_handles) > len(pre_handles):
+                logger.info("New tab/window opened after clicking '%s'", text)
+                for handle in post_handles:
+                    if handle != original_handle:
+                        try:
+                            driver.switch_to.window(handle)
+                            time.sleep(2)
+                            new_url = driver.current_url
+                            logger.info("New tab URL: %s", new_url)
+                            if any(pat in new_url for pat in OFFER_URL_PATTERNS):
+                                logger.info("Captured checkout link from new window: %s", new_url)
+                                # Keep the driver clean - close new window
+                                driver.close()
+                                driver.switch_to.window(original_handle)
+                                return new_url
+                            driver.close()
+                        except Exception as w_err:
+                            logger.warning("Error inspecting new tab: %s", w_err)
+                driver.switch_to.window(original_handle)
+
+            # Check if current URL of original window changed
+            updated_url = driver.current_url
+            if any(pat in updated_url for pat in OFFER_URL_PATTERNS):
+                logger.info("Captured checkout link from main window redirect: %s", updated_url)
+                return updated_url
+
+            # -- UCP / IFrame Widget Verification --
+            # 1. Inspect iframe source URLs directly
+            try:
+                for iframe in driver.find_elements(By.TAG_NAME, "iframe"):
+                    try:
+                        src = iframe.get_attribute("src") or ""
+                        if any(pat in src for pat in OFFER_URL_PATTERNS):
+                            logger.info("Captured checkout link from iframe src: %s", src)
+                            return src
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            # 2. Switch inside every iframe and scan contents
+            try:
+                iframes = driver.find_elements(By.TAG_NAME, "iframe")
+                for iframe in iframes:
+                    try:
+                        driver.switch_to.frame(iframe)
+                        for a_link in driver.find_elements(By.TAG_NAME, "a"):
+                            try:
+                                href = a_link.get_attribute("href") or ""
+                                if any(pat in href for pat in OFFER_URL_PATTERNS):
+                                    logger.info("Captured checkout link inside iframe: %s", href)
+                                    driver.switch_to.default_content()
+                                    return href
+                            except Exception:
+                                continue
+                        driver.switch_to.default_content()
+                    except Exception:
+                        try:
+                            driver.switch_to.default_content()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # Check if interactive frame or new checkout links appeared on current page
+            for a_link in driver.find_elements(By.TAG_NAME, "a"):
+                try:
+                    href = a_link.get_attribute("href") or ""
+                    if any(pat in href for pat in OFFER_URL_PATTERNS):
+                        logger.info("Captured checkout link from page after click: %s", href)
+                        return href
+                except Exception:
+                    continue
+
+        except Exception as e:
+            logger.warning("Error processing candidate %d: %s", i+1, e)
+            try:
+                driver.switch_to.window(original_handle)
+            except Exception:
+                pass
+            continue
+
+    return None
+
+
 def _check_google_one(driver):
     for url in (config.GOOGLE_ONE_URL, config.GOOGLE_ONE_OFFERS_URL):
         try:
+            logger.info("Navigating to %s", url)
             driver.get(url)
             time.sleep(5)
             for s in ('[aria-label="Accept all"]', 'button[jsname="higCR"]'):
@@ -133,7 +356,8 @@ def _check_google_one(driver):
                     time.sleep(1)
                 except NoSuchElementException:
                     pass
-            link = _find_offer_link(driver)
+            
+            link = _find_checkout_url_after_clicks(driver)
             if link:
                 return link
         except Exception as e:
