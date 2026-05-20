@@ -205,7 +205,6 @@ OFFER_URL_PATTERNS = [
     "payments.google.com",
     "play.google.com/store/account",
     "one.google.com/checkout",
-    "one.google.com/offers",
     "store.google.com",
 ]
 
@@ -216,12 +215,6 @@ def _find_checkout_url_after_clicks(driver) -> Optional[str]:
     if any(pat in cur_url for pat in OFFER_URL_PATTERNS):
         logger.info("Current URL is already a checkout page: %s", cur_url)
         return cur_url
-
-    # 2. Try the static anchor check first
-    link = _find_offer_link(driver)
-    if link:
-        logger.info("Found direct offer link via static search: %s", link)
-        return link
 
     # 3. Find potential trial buttons or links that might launch the flow
     selectors = [
