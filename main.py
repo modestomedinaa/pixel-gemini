@@ -25,7 +25,8 @@ from telegram.ext import (
 
 import config
 from device_simulator import create_device_profile
-from google_automation import GoogleAutomationError, check_gemini_offer
+from emulator_automation import check_gemini_offer_emulator as check_gemini_offer
+from google_automation import GoogleAutomationError
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=config.LOG_LEVEL, format=config.LOG_FORMAT)
@@ -184,8 +185,8 @@ async def check_offer(update: Update,
         session["device"] = device
 
     await update.message.reply_text(
-        "⏳ Launching Pixel 10 Pro automation…\n"
-        "Login + device registration + offer search.\n"
+        "⏳ Launching Pixel 10 Pro emulator…\n"
+        "Logging into Google + searching for Gemini Pro offer.\n"
         "_This may take up to 90 seconds._"
     )
 
@@ -193,7 +194,6 @@ async def check_offer(update: Update,
         offer_link = check_gemini_offer(
             session["email"],
             session["password"],
-            device,
             session.get("totp_key", ""),
         )
     except GoogleAutomationError as exc:
