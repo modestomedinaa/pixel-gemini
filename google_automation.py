@@ -22,17 +22,29 @@ from device_simulator import DeviceProfile
 logger = logging.getLogger(__name__)
 
 
-def _build_driver(profile: DeviceProfile) -> webdriver.Chrome:
+def _build_driver(profile: DeviceProfile, email: str) -> webdriver.Chrome:
     options = Options()
     if config.HEADLESS:
         options.add_argument("--headless=new")
+    
+    # Enable persistent Chrome profile mapped to this email to save cookies
+    import re, os
+    clean_email = re.sub(r'[^a-zA-Z0-9]', '_', email)
+    profile_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"chrome_profiles/profile_{clean_email}"))
+    options.add_argument(f"--user-data-dir={profile_path}")
+
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument("--disable-software-rasterizer")
+    options.add_argument("--disable-gpu-rasterization")
+    options.add_argument("--disable-gpu-driver-bug-workarounds")
+    options.add_argument("--disable-impl-side-painting")
+    options.add_argument("--disable-accelerated-2d-canvas")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--window-size=390,844")
     options.add_argument(f"--user-agent={profile.user_agent}")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option("useAutomationExtension", False)
     options.add_experimental_option("mobileEmulation", {
         "deviceMetrics": {"width": 390, "height": 844, "pixelRatio": 3.0},
@@ -59,9 +71,19 @@ def _wait(driver, by, value, timeout=config.WEBDRIVER_TIMEOUT):
 
 
 def _do_login(driver, email, password, totp_key=""):
+    from urllib.parse import urlparse
     driver.get(config.GMAIL_LOGIN_URL)
-    time.sleep(3)
+    time.sleep(4)
 
+    # --- Pre-authenticated Session Bypass ---
+    # Check if Chrome is already logged into the Google Account (Google dashboard, mail, or one page)
+    # If the URL is not a login/signin page, it means our saved session cookies are active!
+    hostname = urlparse(driver.current_url).hostname or ""
+    if any(h in hostname for h in ["myaccount.google.com", "one.google.com", "mail.google.com"]) and not "/signin" in driver.current_url:
+        logger.info("Already logged in via saved cookies! Skipping login credentials entry.")
+        return True
+
+    # Standard login typing steps
     _wait(driver, By.CSS_SELECTOR, 'input[type="email"]').send_keys(email)
     _wait(driver, By.ID, "identifierNext").click()
     time.sleep(4)
@@ -147,6 +169,8 @@ def _find_offer_link(driver):
         try:
             text = (link.text + " " + (link.get_attribute("aria-label") or "")).lower()
             href = link.get_attribute("href") or ""
+            if "LOCKED:" in href or "/benefits/" in href:
+                continue
             if any(kw in text for kw in keywords) and href:
                 return href
         except Exception:
@@ -155,6 +179,8 @@ def _find_offer_link(driver):
     for link in driver.find_elements(By.TAG_NAME, "a"):
         try:
             href = link.get_attribute("href") or ""
+            if "LOCKED:" in href or "/benefits/" in href:
+                continue
             if pat.search(href):
                 return href
         except Exception:
@@ -254,10 +280,10 @@ def _find_checkout_url_after_clicks(driver) -> Optional[str]:
                     logger.warning("Failed to click candidate %d: %s", i+1, click_err)
                     continue
 
-            # Wait for redirect/navigation or modal to load
-            time.sleep(6)
+            # Quick wait (1.5 seconds) to see if anything starts loading/redirecting/modal
+            time.sleep(1.5)
 
-            # Check if any new tab/window was opened
+            # 1. Check if any new tab/window was opened
             post_handles = driver.window_handles
             if len(post_handles) > len(pre_handles):
                 logger.info("New tab/window opened after clicking '%s'", text)
@@ -270,73 +296,50 @@ def _find_checkout_url_after_clicks(driver) -> Optional[str]:
                             logger.info("New tab URL: %s", new_url)
                             if any(pat in new_url for pat in OFFER_URL_PATTERNS):
                                 logger.info("Captured checkout link from new window: %s", new_url)
-                                # Keep the driver clean - close new window
                                 driver.close()
                                 driver.switch_to.window(original_handle)
                                 return new_url
                             driver.close()
                         except Exception as w_err:
-                            logger.warning("Error inspecting new tab: %s", w_err)
+                            logger.warning("Tab check error: %s", w_err)
                 driver.switch_to.window(original_handle)
 
-            # Check if current URL of original window changed
-            updated_url = driver.current_url
-            if any(pat in updated_url for pat in OFFER_URL_PATTERNS):
-                logger.info("Captured checkout link from main window redirect: %s", updated_url)
-                return updated_url
+            # 2. Check if main window URL changed into a checkout page
+            cur_url = driver.current_url
+            if any(pat in cur_url for pat in OFFER_URL_PATTERNS):
+                logger.info("Captured checkout link from redirection: %s", cur_url)
+                return cur_url
 
-            # -- UCP / IFrame Widget Verification --
-            # 1. Inspect iframe source URLs directly
-            try:
-                for iframe in driver.find_elements(By.TAG_NAME, "iframe"):
+            # 3. Check if any UCP checkout iframe widget opened on screen
+            for iframe in driver.find_elements(By.TAG_NAME, "iframe"):
+                try:
+                    src = iframe.get_attribute("src") or ""
+                    if any(pat in src for pat in OFFER_URL_PATTERNS):
+                        logger.info("Captured checkout link from iframe src: %s", src)
+                        return src
+                    
+                    # Inspect internal frame anchor links
+                    driver.switch_to.frame(iframe)
+                    for link_el in driver.find_elements(By.TAG_NAME, "a"):
+                        try:
+                            href = link_el.get_attribute("href") or ""
+                            if any(pat in href for pat in OFFER_URL_PATTERNS):
+                                logger.info("Captured checkout link inside iframe DOM: %s", href)
+                                driver.switch_to.default_content()
+                                return href
+                        except Exception:
+                            continue
+                    driver.switch_to.default_content()
+                except Exception:
                     try:
-                        src = iframe.get_attribute("src") or ""
-                        if any(pat in src for pat in OFFER_URL_PATTERNS):
-                            logger.info("Captured checkout link from iframe src: %s", src)
-                            return src
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-
-            # 2. Switch inside every iframe and scan contents
-            try:
-                iframes = driver.find_elements(By.TAG_NAME, "iframe")
-                for iframe in iframes:
-                    try:
-                        driver.switch_to.frame(iframe)
-                        for a_link in driver.find_elements(By.TAG_NAME, "a"):
-                            try:
-                                href = a_link.get_attribute("href") or ""
-                                if any(pat in href for pat in OFFER_URL_PATTERNS):
-                                    logger.info("Captured checkout link inside iframe: %s", href)
-                                    driver.switch_to.default_content()
-                                    return href
-                            except Exception:
-                                continue
                         driver.switch_to.default_content()
                     except Exception:
-                        try:
-                            driver.switch_to.default_content()
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-            # Check if interactive frame or new checkout links appeared on current page
-            for a_link in driver.find_elements(By.TAG_NAME, "a"):
-                try:
-                    href = a_link.get_attribute("href") or ""
-                    if any(pat in href for pat in OFFER_URL_PATTERNS):
-                        logger.info("Captured checkout link from page after click: %s", href)
-                        return href
-                except Exception:
+                        pass
                     continue
-
         except Exception as e:
-            logger.warning("Error processing candidate %d: %s", i+1, e)
+            logger.warning("Candidate click execution error: %s", e)
             try:
-                driver.switch_to.window(original_handle)
+                driver.switch_to.default_content()
             except Exception:
                 pass
             continue
@@ -345,7 +348,8 @@ def _find_checkout_url_after_clicks(driver) -> Optional[str]:
 
 
 def _check_google_one(driver):
-    for url in (config.GOOGLE_ONE_URL, config.GOOGLE_ONE_OFFERS_URL):
+    # Search one.google.com/offers first, as that contains active claim buttons when logged in!
+    for url in ("https://one.google.com/offers", config.GOOGLE_ONE_URL, config.GOOGLE_ONE_OFFERS_URL):
         try:
             logger.info("Navigating to %s", url)
             driver.get(url)
@@ -376,7 +380,7 @@ def check_gemini_offer(email: str, password: str, device: DeviceProfile,
     """
     driver = None
     try:
-        driver = _build_driver(device)
+        driver = _build_driver(device, email)
 
         if not _do_login(driver, email, password, totp_key):
             raise GoogleAutomationError("Login failed - check credentials")
