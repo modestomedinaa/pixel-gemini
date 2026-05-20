@@ -184,10 +184,9 @@ async def check_offer(update: Update,
         session["device"] = device
 
     await update.message.reply_text(
-        "⏳ Opening Pixel 10 Pro browser window…\n\n"
-        "🔐 *Log in manually* in the browser (email, password, 2FA, captcha).\n"
-        "Once logged in, the bot will auto-detect and search for the offer.\n\n"
-        "_You have 5 minutes to log in._"
+        "⏳ Launching Pixel 10 Pro automation…\n"
+        "Login + device registration + offer search.\n"
+        "_This may take up to 90 seconds._"
     )
 
     try:
