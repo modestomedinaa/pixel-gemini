@@ -209,11 +209,10 @@ async def check_offer(update: Update,
     if offer_link:
         session["offer_link"] = offer_link
         await update.message.reply_text(
-            "🎉 *Gemini Pro Offer Found!*\n\n"
+            "🎉 Gemini Pro Offer Found!\n\n"
             "Click the link below to activate your 12-month free Gemini Pro:\n\n"
-            f"🔗 {offer_link}\n\n"
-            "_Use /get\\_link to retrieve this link again._",
-            parse_mode="Markdown",
+            f"{offer_link}\n\n"
+            "Use /get_link to retrieve this link again."
         )
     else:
         await update.message.reply_text(
