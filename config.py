@@ -62,6 +62,11 @@ HEADLESS = False                # visible for debug
 # Values: {"email": ..., "password": ..., "totp_key": ..., "device": <DeviceProfile>, "offer_link": ...}
 SESSION_STORE: dict = {}
 
+# ── Proxy Configuration (Optional) ───────────────────────────────────────────
+# Clean foreign proxy (e.g. "http://123.45.67.89:8080" or "socks5://123.45.67.89:1080").
+# If configured, Selenium will automatically route Chrome traffic through this server.
+PROXY = ""
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = "INFO"
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

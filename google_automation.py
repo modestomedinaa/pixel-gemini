@@ -27,6 +27,11 @@ def _build_driver(profile: DeviceProfile, email: str) -> webdriver.Chrome:
     if config.HEADLESS:
         options.add_argument("--headless=new")
     
+    # Configure optional proxy routing
+    if getattr(config, "PROXY", ""):
+        options.add_argument(f"--proxy-server={config.PROXY}")
+        logger.info("Configured web driver proxy server: %s", config.PROXY)
+    
     # Enable persistent Chrome profile mapped to this email to save cookies
     import re, os
     clean_email = re.sub(r'[^a-zA-Z0-9]', '_', email)
