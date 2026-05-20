@@ -9,3 +9,9 @@ webdriver-manager==4.0.1
 
 # TOTP generation for Google 2FA
 pyotp==2.9.0
+
+# Undetected Chrome (bypasses automation detection)
+undetected-chromedriver==3.5.5
+
+# HTTP requests for device registration API
+requests==2.31.0
