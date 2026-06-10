@@ -272,6 +272,7 @@ def _handle_recovery_email(driver, chat_id) -> bool:
         "Подтвердите резервный адрес электронной почты",
         "Подтвердите резервную почту"
     ]
+    clicked_selection = False
     for text in selection_texts:
         try:
             el = driver.find_element(By.XPATH, f"//*[contains(text(), '{text}')]")
@@ -282,6 +283,7 @@ def _handle_recovery_email(driver, chat_id) -> bool:
                 except Exception:
                     driver.execute_script("arguments[0].click();", el)
                 time.sleep(5)
+                clicked_selection = True
                 break
         except NoSuchElementException:
             continue
@@ -383,6 +385,31 @@ def _handle_recovery_email(driver, chat_id) -> bool:
         time.sleep(6)
         return True
 
+    return clicked_selection
+
+
+def _handle_use_another_device(driver, chat_id) -> bool:
+    # 1. Check if we are on the selection page containing "Use another phone or computer"
+    device_selection_texts = [
+        "Use another phone or computer to finish signing in",
+        "Use another phone or computer",
+        "Использовать другой телефон или компьютер"
+    ]
+    
+    for text in device_selection_texts:
+        try:
+            el = driver.find_element(By.XPATH, f"//*[contains(text(), '{text}')]")
+            if el.is_displayed():
+                logger.info("Found selection option: '%s'. Clicking it.", text)
+                try:
+                    el.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", el)
+                time.sleep(5)
+                return True
+        except NoSuchElementException:
+            continue
+            
     return False
 
 
@@ -396,6 +423,7 @@ def _handle_recovery_phone(driver, chat_id) -> bool:
         "Confirm your recovery phone"
     ]
     
+    clicked_selection = False
     for text in selection_texts:
         try:
             el = driver.find_element(By.XPATH, f"//*[contains(text(), '{text}')]")
@@ -406,6 +434,7 @@ def _handle_recovery_phone(driver, chat_id) -> bool:
                 except Exception:
                     driver.execute_script("arguments[0].click();", el)
                 time.sleep(5)
+                clicked_selection = True
                 break
         except NoSuchElementException:
             continue
@@ -601,7 +630,7 @@ def _handle_recovery_phone(driver, chat_id) -> bool:
         time.sleep(6)
         return True
 
-    return False
+    return clicked_selection
 
 
 def _handle_sms_code(driver, chat_id) -> bool:
@@ -809,6 +838,8 @@ def _do_login(driver, email, password, totp_key="", chat_id=0):
     if chat_id:
         for _ in range(5):
             if _handle_captcha(driver, chat_id):
+                continue
+            if _handle_use_another_device(driver, chat_id):
                 continue
             if _handle_phone_prompt(driver, chat_id):
                 continue
