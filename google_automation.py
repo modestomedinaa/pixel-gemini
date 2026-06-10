@@ -56,7 +56,25 @@ def _build_driver(profile: DeviceProfile, email: str) -> webdriver.Chrome:
         "userAgent": profile.user_agent,
     })
 
-    service = Service()
+    import os
+    # For Docker / Linux server environments, check common paths for Chromium
+    for path in ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"]:
+        if os.path.exists(path):
+            options.binary_location = path
+            logger.info("Found browser binary at %s", path)
+            break
+
+    chromedriver_path = None
+    for path in ["/usr/bin/chromedriver"]:
+        if os.path.exists(path):
+            chromedriver_path = path
+            logger.info("Found ChromeDriver binary at %s", path)
+            break
+
+    if chromedriver_path:
+        service = Service(executable_path=chromedriver_path)
+    else:
+        service = Service()
     driver = webdriver.Chrome(service=service, options=options)
 
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": """

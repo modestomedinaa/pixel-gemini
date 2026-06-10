@@ -55,7 +55,7 @@ GEMINI_OFFER_KEYWORDS = [
 WEBDRIVER_TIMEOUT = 30          # seconds – explicit wait
 IMPLICIT_WAIT = 10              # seconds
 PAGE_LOAD_TIMEOUT = 60          # seconds
-HEADLESS = False                # visible for debug
+HEADLESS = os.environ.get("HEADLESS", "true" if "DISPLAY" not in os.environ else "false").lower() == "true"
 
 # ── Session storage ───────────────────────────────────────────────────────────
 # In-memory dict keyed by Telegram chat_id.

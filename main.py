@@ -310,9 +310,44 @@ async def status(update: Update,
     )
 
 
+# ── Health check server for Cloud Deployments ───────────────────────────────────
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+        
+    def log_message(self, format, *args):
+        # Suppress logging to prevent cluttering the log output
+        return
+
+def start_health_check_server():
+    port_str = os.environ.get("PORT", "8080")
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 8080
+        
+    def run_server():
+        server_address = ('', port)
+        httpd = HTTPServer(server_address, HealthCheckHandler)
+        logger.info("Health check server started on port %d", port)
+        httpd.serve_forever()
+
+    thread = threading.Thread(target=run_server, daemon=True)
+    thread.start()
+
+
 # ── Application setup ─────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Start health check server for cloud deployment
+    start_health_check_server()
+
     token = config.TELEGRAM_BOT_TOKEN
     if not token:
         logger.error(
