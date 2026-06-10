@@ -580,26 +580,41 @@ def _handle_recovery_phone(driver, chat_id) -> bool:
         if dial_code:
             logger.info("Parsed dial code: %s, local number: %s", dial_code, local_number)
             
-            # Click the country select dropdown
-            dropdown_selectors = [
-                '[role="combobox"]',
-                '[aria-haspopup="listbox"]',
-                'button[aria-expanded]',
-                '[aria-label*="country"]',
-                '[aria-label*="Country"]',
-                '[aria-label*="code"]',
-                '[aria-label*="Code"]'
-            ]
-            
+            # 1. Try to find the dropdown relative to the phone input field (up to 3 levels parent search)
             dropdown = None
-            for sel in dropdown_selectors:
-                try:
-                    el = driver.find_element(By.CSS_SELECTOR, sel)
-                    if el.is_displayed():
-                        dropdown = el
-                        break
-                except NoSuchElementException:
-                    continue
+            try:
+                parent = phone_field.find_element(By.XPATH, "..")
+                for depth in range(1, 4):
+                    try:
+                        el = parent.find_element(By.XPATH, './/div[@role="combobox"] | .//div[@aria-haspopup="listbox"] | .//button | .//div[contains(@aria-label, "code")]')
+                        if el.is_displayed():
+                            dropdown = el
+                            logger.info("Found country dropdown relative to phone field at depth %d", depth)
+                            break
+                    except NoSuchElementException:
+                        parent = parent.find_element(By.XPATH, "..")
+            except Exception as e:
+                logger.warning("Could not find dropdown relative to phone field: %s", e)
+
+            # Fallback to CSS selectors if parent search failed
+            if not dropdown:
+                dropdown_selectors = [
+                    '[role="combobox"]',
+                    '[aria-haspopup="listbox"]',
+                    'button[aria-expanded]',
+                    '[aria-label*="country"]',
+                    '[aria-label*="Country"]',
+                    '[aria-label*="code"]',
+                    '[aria-label*="Code"]'
+                ]
+                for sel in dropdown_selectors:
+                    try:
+                        el = driver.find_element(By.CSS_SELECTOR, sel)
+                        if el.is_displayed():
+                            dropdown = el
+                            break
+                    except NoSuchElementException:
+                        continue
                     
             if dropdown:
                 try:
@@ -616,16 +631,30 @@ def _handle_recovery_phone(driver, chat_id) -> bool:
                     if dial_code == "+98":
                         search_terms.extend(["Iran", "Иран", "Исламская Республика Иран"])
                     
+                    # Wait up to 5 seconds for the option to become visible
                     option = None
-                    for term in search_terms:
-                        try:
-                            # Try to find list item containing the term
-                            el_opt = driver.find_element(By.XPATH, f"//li[contains(text(), '{term}')] | //div[contains(text(), '{term}')] | //*[contains(text(), '{term}')]")
-                            if el_opt.is_displayed():
-                                option = el_opt
+                    for _ in range(10):
+                        for term in search_terms:
+                            opt_selectors = [
+                                f"//span[contains(text(), '{term}')]",
+                                f"//*[@role='option'][contains(., '{term}')]",
+                                f"//li[contains(., '{term}')]",
+                                f"//div[@role='option']//*[contains(text(), '{term}')]",
+                                f"//div[contains(@data-value, '{term}')]"
+                            ]
+                            for opt_sel in opt_selectors:
+                                try:
+                                    el_opt = driver.find_element(By.XPATH, opt_sel)
+                                    if el_opt.is_displayed():
+                                        option = el_opt
+                                        break
+                                except NoSuchElementException:
+                                    continue
+                            if option:
                                 break
-                        except NoSuchElementException:
-                            continue
+                        if option:
+                            break
+                        time.sleep(0.5)
                             
                     if option:
                         logger.info("Found option for %s. Clicking it.", dial_code)
@@ -645,21 +674,46 @@ def _handle_recovery_phone(driver, chat_id) -> bool:
                 except Exception as e:
                     logger.warning("Error during country selection: %s", e)
 
-        # Type the phone number and click Next/Send
-        phone_field.clear()
+        # Clear and type the phone number
+        from selenium.webdriver.common.keys import Keys
+        try:
+            phone_field.click()
+            time.sleep(0.5)
+            phone_field.send_keys(Keys.CONTROL + "a")
+            phone_field.send_keys(Keys.BACKSPACE)
+            time.sleep(0.5)
+        except Exception:
+            try:
+                phone_field.clear()
+            except Exception:
+                pass
+                
         phone_field.send_keys(local_number)
         time.sleep(1)
         
-        # Find and click Next button
+        # Find and click Next/Send button
         next_button = None
-        for sel_btn in ["#phoneNumberNext", "button[type='submit']", "button", "input[type='submit']", "#idvPreregisteredPhoneNext"]:
+        
+        # 1. Prioritize buttons with submit action or text labels matching Next/Send
+        for term in ["Send", "Next", "Далее", "Отправить", "Отправить код"]:
             try:
-                el = driver.find_element(By.CSS_SELECTOR, sel_btn)
+                el = driver.find_element(By.XPATH, f"//button[contains(., '{term}')] | //input[contains(@value, '{term}')]")
                 if el.is_displayed():
                     next_button = el
                     break
             except NoSuchElementException:
                 continue
+                
+        # 2. Fallback to generic selectors
+        if not next_button:
+            for sel_btn in ["#phoneNumberNext", "button[type='submit']", "button[jsname]", "#idvPreregisteredPhoneNext", "button"]:
+                try:
+                    el = driver.find_element(By.CSS_SELECTOR, sel_btn)
+                    if el.is_displayed():
+                        next_button = el
+                        break
+                except NoSuchElementException:
+                    continue
                 
         if next_button:
             try:
