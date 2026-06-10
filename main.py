@@ -221,17 +221,32 @@ async def check_offer(update: Update,
             device,
             session.get("totp_key", ""),
         )
-    except GoogleAutomationError as exc:
-        await update.message.reply_text(f"❌ *Error:* {exc}", parse_mode="Markdown")
-        return
     except Exception as exc:
-        logger.exception("Unexpected error in check_offer for chat %s", chat_id)
-        import traceback
-        tb = traceback.format_exc()
-        await update.message.reply_text(
-            f"❌ Error: {exc}\n\n```\n{tb[-500:]}\n```",
-            parse_mode="Markdown"
-        )
+        import os
+        screenshot_path = "debug_login_error.png"
+        if os.path.exists(screenshot_path):
+            try:
+                with open(screenshot_path, "rb") as f:
+                    await update.message.reply_photo(
+                        photo=f,
+                        caption=f"❌ *Error:* {exc}\nHere is a screenshot of the login screen to help you debug.",
+                        parse_mode="Markdown"
+                    )
+                os.remove(screenshot_path)
+            except Exception as se:
+                logger.warning("Failed to send screenshot: %s", se)
+                await update.message.reply_text(f"❌ *Error:* {exc}", parse_mode="Markdown")
+        else:
+            if isinstance(exc, GoogleAutomationError):
+                await update.message.reply_text(f"❌ *Error:* {exc}", parse_mode="Markdown")
+            else:
+                logger.exception("Unexpected error in check_offer for chat %s", chat_id)
+                import traceback
+                tb = traceback.format_exc()
+                await update.message.reply_text(
+                    f"❌ Error: {exc}\n\n```\n{tb[-500:]}\n```",
+                    parse_mode="Markdown"
+                )
         return
 
     if offer_link:

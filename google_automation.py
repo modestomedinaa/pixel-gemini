@@ -406,12 +406,25 @@ def check_gemini_offer(email: str, password: str, device: DeviceProfile,
         driver = _build_driver(device, email)
 
         if not _do_login(driver, email, password, totp_key):
+            try:
+                driver.save_screenshot("debug_login_error.png")
+                logger.info("Saved debug screenshot to debug_login_error.png")
+            except Exception as se:
+                logger.warning("Could not save screenshot: %s", se)
             raise GoogleAutomationError("Login failed - check credentials")
 
         logger.info("Logged in, searching Google One...")
         link = _check_google_one(driver)
         return link
 
+    except Exception as exc:
+        if driver and not os.path.exists("debug_login_error.png"):
+            try:
+                driver.save_screenshot("debug_login_error.png")
+                logger.info("Saved debug screenshot on exception to debug_login_error.png")
+            except Exception as se:
+                logger.warning("Could not save screenshot: %s", se)
+        raise
     finally:
         if driver:
             try:
