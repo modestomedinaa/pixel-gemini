@@ -481,14 +481,106 @@ def _handle_recovery_phone(driver, chat_id) -> bool:
         phone_number = config.PENDING_INPUTS[chat_id]["value"]
         config.PENDING_INPUTS.pop(chat_id, None)
         
-        # Type the phone number and click Next
+        # Select country code dropdown and type the phone number
+        dial_code = None
+        local_number = phone_number
+
+        # Clean the phone number (remove spaces and dashes)
+        phone_clean = "".join(c for c in phone_number if c.isalnum() or c == "+")
+        
+        if phone_clean.startswith("+"):
+            # Try to match the dial code
+            for l in [4, 3, 2, 1]:
+                candidate = phone_clean[1:l+1]
+                if candidate.isdigit():
+                    dial_code = "+" + candidate
+                    local_number = phone_clean[l+1:]
+                    break
+        else:
+            # Default to Iran if it looks like an Iranian mobile number
+            if phone_clean.startswith("09") and len(phone_clean) == 11:
+                dial_code = "+98"
+                local_number = phone_clean[1:]
+            elif phone_clean.startswith("9") and len(phone_clean) == 10:
+                dial_code = "+98"
+                local_number = phone_clean
+
+        if dial_code:
+            logger.info("Parsed dial code: %s, local number: %s", dial_code, local_number)
+            
+            # Click the country select dropdown
+            dropdown_selectors = [
+                '[role="combobox"]',
+                '[aria-haspopup="listbox"]',
+                'button[aria-expanded]',
+                '[aria-label*="country"]',
+                '[aria-label*="Country"]',
+                '[aria-label*="code"]',
+                '[aria-label*="Code"]'
+            ]
+            
+            dropdown = None
+            for sel in dropdown_selectors:
+                try:
+                    el = driver.find_element(By.CSS_SELECTOR, sel)
+                    if el.is_displayed():
+                        dropdown = el
+                        break
+                except NoSuchElementException:
+                    continue
+                    
+            if dropdown:
+                try:
+                    logger.info("Clicking country dropdown...")
+                    try:
+                        dropdown.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", dropdown)
+                    time.sleep(2)
+                    
+                    # Search for the country option
+                    # Build search strings for option (e.g. "+98", "+ 98", "Iran", "Иран")
+                    search_terms = [dial_code, dial_code.replace("+", "+ ")]
+                    if dial_code == "+98":
+                        search_terms.extend(["Iran", "Иран", "Исламская Республика Иран"])
+                    
+                    option = None
+                    for term in search_terms:
+                        try:
+                            # Try to find list item containing the term
+                            el_opt = driver.find_element(By.XPATH, f"//li[contains(text(), '{term}')] | //div[contains(text(), '{term}')] | //*[contains(text(), '{term}')]")
+                            if el_opt.is_displayed():
+                                option = el_opt
+                                break
+                        except NoSuchElementException:
+                            continue
+                            
+                    if option:
+                        logger.info("Found option for %s. Clicking it.", dial_code)
+                        try:
+                            option.click()
+                        except Exception:
+                            driver.execute_script("arguments[0].click();", option)
+                        time.sleep(2)
+                    else:
+                        logger.warning("Country option for %s not found in dropdown.", dial_code)
+                        # Close dropdown by clicking the phone field
+                        try:
+                            phone_field.click()
+                        except Exception:
+                            pass
+                        time.sleep(1)
+                except Exception as e:
+                    logger.warning("Error during country selection: %s", e)
+
+        # Type the phone number and click Next/Send
         phone_field.clear()
-        phone_field.send_keys(phone_number)
+        phone_field.send_keys(local_number)
         time.sleep(1)
         
         # Find and click Next button
         next_button = None
-        for sel_btn in ["#phoneNumberNext", "button[type='submit']", "button", "input[type='submit']"]:
+        for sel_btn in ["#phoneNumberNext", "button[type='submit']", "button", "input[type='submit']", "#idvPreregisteredPhoneNext"]:
             try:
                 el = driver.find_element(By.CSS_SELECTOR, sel_btn)
                 if el.is_displayed():

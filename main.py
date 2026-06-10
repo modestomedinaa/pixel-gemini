@@ -23,6 +23,7 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     filters,
+    ApplicationHandlerStop,
 )
 
 import config
@@ -362,9 +363,11 @@ def start_health_check_server():
 async def handle_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle interactive user inputs (like recovery phone or verification codes) while automation is running."""
     chat_id = update.effective_chat.id
+    user_input = update.message.text.strip() if update.message and update.message.text else ""
+    logger.info("handle_user_reply: chat_id=%s, message='%s', pending_keys=%s",
+                chat_id, user_input, list(config.PENDING_INPUTS.keys()))
+                
     if chat_id in config.PENDING_INPUTS:
-        user_input = update.message.text.strip()
-        
         # Delete the user's input message for privacy/security
         try:
             await update.message.delete()
@@ -374,7 +377,7 @@ async def handle_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         config.PENDING_INPUTS[chat_id]["value"] = user_input
         config.PENDING_INPUTS[chat_id]["event"].set()
         await update.message.reply_text("⏳ Processing verification input, please wait...")
-        return
+        raise ApplicationHandlerStop()
 
 
 # ── Application setup ─────────────────────────────────────────────────────────
