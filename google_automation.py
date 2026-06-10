@@ -2,7 +2,7 @@
 Google One automation - simple Selenium + CDP stealth.
 Login -> Google One -> find Gemini Pro offer.
 """
-import logging, time, re
+import logging, time, re, os
 from urllib.parse import urlparse
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -91,6 +91,299 @@ def _build_driver(profile: DeviceProfile, email: str) -> webdriver.Chrome:
 
 def _wait(driver, by, value, timeout=config.WEBDRIVER_TIMEOUT):
     return WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((by, value)))
+
+
+def _handle_captcha(driver, chat_id) -> bool:
+    # Check if a CAPTCHA is present
+    captcha_indicators = [
+        "type the text you hear or see", "enter the letters", "введите символы",
+        "капча", "captcha", "security check"
+    ]
+    html_content = (driver.page_source or "").lower()
+    is_captcha = any(ind in html_content for ind in captcha_indicators) or driver.find_elements(By.CSS_SELECTOR, "img[src*='Captcha']") or driver.find_elements(By.CSS_SELECTOR, "#captcha")
+    
+    if not is_captcha:
+        return False
+        
+    captcha_field = None
+    for sel in ['input[id*="captcha"]', 'input[name*="captcha"]', 'input[type="text"]']:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            if el.is_displayed():
+                captcha_field = el
+                break
+        except NoSuchElementException:
+            continue
+            
+    if captcha_field:
+        logger.info("CAPTCHA detected. Asking user via Telegram...")
+        
+        screenshot_path = "debug_login_error.png"
+        try:
+            driver.save_screenshot(screenshot_path)
+        except Exception as se:
+            logger.warning("Could not save screenshot: %s", se)
+            screenshot_path = None
+
+        # Notify Telegram user
+        import requests
+        import os
+        url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendPhoto"
+        try:
+            if screenshot_path and os.path.exists(screenshot_path):
+                with open(screenshot_path, "rb") as f:
+                    requests.post(url, data={
+                        "chat_id": chat_id,
+                        "caption": "🤖 *CAPTCHA Required*\n\nGoogle is asking you to solve a CAPTCHA.\n\nPlease reply to this message with the *characters shown in the image*:",
+                        "parse_mode": "Markdown"
+                    }, files={"photo": f}, timeout=15)
+                os.remove(screenshot_path)
+            else:
+                raise Exception()
+        except Exception:
+            url_msg = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+            requests.post(url_msg, json={
+                "chat_id": chat_id,
+                "text": "🤖 *CAPTCHA Required*\n\nGoogle is asking you to solve a CAPTCHA. Please reply to this message with the characters shown in the browser:",
+                "parse_mode": "Markdown"
+            }, timeout=15)
+
+        # Register event and wait
+        import threading
+        event = threading.Event()
+        config.PENDING_INPUTS[chat_id] = {"event": event, "value": None}
+        
+        success = event.wait(timeout=90)
+        if not success or not config.PENDING_INPUTS[chat_id]["value"]:
+            config.PENDING_INPUTS.pop(chat_id, None)
+            raise GoogleAutomationError("Timeout waiting for CAPTCHA response.")
+            
+        captcha_value = config.PENDING_INPUTS[chat_id]["value"]
+        config.PENDING_INPUTS.pop(chat_id, None)
+        
+        # Type CAPTCHA and submit
+        captcha_field.clear()
+        captcha_field.send_keys(captcha_value)
+        time.sleep(1)
+        
+        # Click Next
+        next_button = None
+        for sel_btn in ["button[type='submit']", "button", "input[type='submit']"]:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel_btn)
+                if el.is_displayed():
+                    next_button = el
+                    break
+            except NoSuchElementException:
+                continue
+                
+        if next_button:
+            try:
+                next_button.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", next_button)
+        else:
+            captcha_field.submit()
+            
+        logger.info("Submitted CAPTCHA response. Waiting...")
+        time.sleep(6)
+        return True
+        
+    return False
+
+
+def _handle_phone_prompt(driver, chat_id) -> bool:
+    prompt_indicators = [
+        "Check your phone", "Tap yes", "open the google app", "confirm on your phone",
+        "нажмите да", "откройте приложение", "подтвердите на телефоне", "check your tablet",
+        "check your mobile", "проверьте телефон"
+    ]
+    html_content = (driver.page_source or "").lower()
+    is_prompt = any(ind in html_content for ind in prompt_indicators)
+    
+    if not is_prompt:
+        return False
+        
+    logger.info("Phone prompt/tap screen detected. Notifying user...")
+    
+    # Take a screenshot so the user sees the number to tap
+    screenshot_path = "debug_login_error.png"
+    try:
+        driver.save_screenshot(screenshot_path)
+    except Exception as se:
+        logger.warning("Could not save screenshot: %s", se)
+        screenshot_path = None
+
+    import requests
+    import os
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendPhoto"
+    try:
+        if screenshot_path and os.path.exists(screenshot_path):
+            with open(screenshot_path, "rb") as f:
+                requests.post(url, data={
+                    "chat_id": chat_id,
+                    "caption": "📱 *Google Phone Verification Prompt*\n\nGoogle has sent a notification to your device.\n\nPlease check your phone/tablet and **approve the sign-in** (if Google shows a number, match it with the number in the image above).\n\nReply with `done` or just wait once you approve it on your phone.",
+                    "parse_mode": "Markdown"
+                }, files={"photo": f}, timeout=15)
+            os.remove(screenshot_path)
+        else:
+            raise Exception()
+    except Exception:
+        url_msg = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url_msg, json={
+            "chat_id": chat_id,
+            "text": "📱 *Google Phone Verification Prompt*\n\nGoogle has sent a notification to your device.\n\nPlease check your phone/tablet and **approve the sign-in**.\n\nReply with `done` once approved.",
+            "parse_mode": "Markdown"
+        }, timeout=15)
+
+    # Register input to let the user reply "done" manually, but we also poll the page in parallel!
+    import threading
+    event = threading.Event()
+    config.PENDING_INPUTS[chat_id] = {"event": event, "value": None}
+    
+    # We will poll the page status and also wait for the event
+    # Let's poll for up to 90 seconds
+    for _ in range(30):
+        # Wait 3 seconds
+        if event.wait(timeout=3.0):
+            # User replied manually (e.g. typed "done")
+            break
+            
+        # Check if the page has changed (e.g. redirecting or prompt disappeared)
+        try:
+            curr_html = (driver.page_source or "").lower()
+            is_still_prompt = any(ind in curr_html for ind in prompt_indicators)
+            if not is_still_prompt:
+                logger.info("Phone prompt approved (page content changed). Resuming...")
+                break
+        except Exception:
+            break
+            
+    config.PENDING_INPUTS.pop(chat_id, None)
+    time.sleep(3)
+    return True
+
+
+def _handle_recovery_email(driver, chat_id) -> bool:
+    # 1. Check if we need to click "Confirm your recovery email"
+    selection_texts = [
+        "Confirm your recovery email",
+        "Confirm recovery email",
+        "Подтвердите резервный адрес электронной почты",
+        "Подтвердите резервную почту"
+    ]
+    for text in selection_texts:
+        try:
+            el = driver.find_element(By.XPATH, f"//*[contains(text(), '{text}')]")
+            if el.is_displayed():
+                logger.info("Found selection option: '%s'. Clicking it.", text)
+                try:
+                    el.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", el)
+                time.sleep(5)
+                break
+        except NoSuchElementException:
+            continue
+
+    # 2. Check if the recovery email input field is present
+    email_selectors = [
+        'input[type="email"]',
+        'input[id*="email"]',
+        'input[name*="email"]',
+        'input[name*="recoveryEmail"]',
+        'input[autocomplete*="email"]'
+    ]
+    
+    email_field = None
+    html_content = (driver.page_source or "").lower()
+    is_verification = any(ind in html_content for ind in ["confirm your recovery email", "enter your recovery email", "резервный", "подтвердите"])
+    
+    if is_verification:
+        for sel in email_selectors:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel)
+                if el.is_displayed():
+                    email_field = el
+                    break
+            except NoSuchElementException:
+                continue
+
+    if email_field:
+        logger.info("Recovery email input field found. Asking user via Telegram...")
+        
+        screenshot_path = "debug_login_error.png"
+        try:
+            driver.save_screenshot(screenshot_path)
+        except Exception as se:
+            logger.warning("Could not save screenshot: %s", se)
+            screenshot_path = None
+
+        # Notify Telegram user
+        import requests
+        import os
+        url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendPhoto"
+        try:
+            if screenshot_path and os.path.exists(screenshot_path):
+                with open(screenshot_path, "rb") as f:
+                    requests.post(url, data={
+                        "chat_id": chat_id,
+                        "caption": "📧 *Google Verification Required*\n\nGoogle is asking to enter/confirm your recovery email address.\n\nPlease reply to this message with your *full recovery email address*:",
+                        "parse_mode": "Markdown"
+                    }, files={"photo": f}, timeout=15)
+                os.remove(screenshot_path)
+            else:
+                raise Exception()
+        except Exception:
+            url_msg = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+            requests.post(url_msg, json={
+                "chat_id": chat_id,
+                "text": "📧 *Google Verification Required*\n\nGoogle is asking to enter/confirm your recovery email address.\n\nPlease reply to this message with your *full recovery email address*:",
+                "parse_mode": "Markdown"
+            }, timeout=15)
+
+        # Wait for user input
+        import threading
+        event = threading.Event()
+        config.PENDING_INPUTS[chat_id] = {"event": event, "value": None}
+        
+        success = event.wait(timeout=90)
+        if not success or not config.PENDING_INPUTS[chat_id]["value"]:
+            config.PENDING_INPUTS.pop(chat_id, None)
+            raise GoogleAutomationError("Timeout waiting for recovery email.")
+            
+        recovery_email = config.PENDING_INPUTS[chat_id]["value"]
+        config.PENDING_INPUTS.pop(chat_id, None)
+        
+        # Type recovery email and click Next
+        email_field.clear()
+        email_field.send_keys(recovery_email)
+        time.sleep(1)
+        
+        # Click Next
+        next_button = None
+        for sel_btn in ["button[type='submit']", "button", "input[type='submit']"]:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel_btn)
+                if el.is_displayed():
+                    next_button = el
+                    break
+            except NoSuchElementException:
+                continue
+                
+        if next_button:
+            try:
+                next_button.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", next_button)
+        else:
+            email_field.submit()
+            
+        logger.info("Submitted recovery email. Waiting for Google...")
+        time.sleep(6)
+        return True
+
+    return False
 
 
 def _handle_recovery_phone(driver, chat_id) -> bool:
@@ -420,10 +713,16 @@ def _do_login(driver, email, password, totp_key="", chat_id=0):
 
     time.sleep(3)
 
-    # Handle recovery phone or SMS code challenges if they appear
+    # Handle recovery phone, email, phone prompt, captcha, or SMS code challenges if they appear
     if chat_id:
-        for _ in range(3):
+        for _ in range(5):
+            if _handle_captcha(driver, chat_id):
+                continue
+            if _handle_phone_prompt(driver, chat_id):
+                continue
             if _handle_recovery_phone(driver, chat_id):
+                continue
+            if _handle_recovery_email(driver, chat_id):
                 continue
             if _handle_sms_code(driver, chat_id):
                 continue
