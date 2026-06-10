@@ -62,6 +62,10 @@ HEADLESS = os.environ.get("HEADLESS", "true" if "DISPLAY" not in os.environ else
 # Values: {"email": ..., "password": ..., "totp_key": ..., "device": <DeviceProfile>, "offer_link": ...}
 SESSION_STORE: dict = {}
 
+# Pending interactive inputs from Telegram (e.g. recovery phone, verification code)
+# Key: chat_id, Value: {"event": threading.Event(), "value": None}
+PENDING_INPUTS: dict = {}
+
 # ── Proxy Configuration (Optional) ───────────────────────────────────────────
 # Clean foreign proxy (e.g. "http://123.45.67.89:8080" or "socks5://123.45.67.89:1080").
 # If configured, Selenium will automatically route Chrome traffic through this server.

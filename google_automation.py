@@ -93,7 +93,248 @@ def _wait(driver, by, value, timeout=config.WEBDRIVER_TIMEOUT):
     return WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((by, value)))
 
 
-def _do_login(driver, email, password, totp_key=""):
+def _handle_recovery_phone(driver, chat_id) -> bool:
+    # 1. Check if we are on the selection page
+    selection_texts = [
+        "Confirm your recovery phone number",
+        "Confirm recovery phone",
+        "Подтвердите резервный номер телефона",
+        "Подтвердите номер телефона",
+        "Confirm your recovery phone"
+    ]
+    
+    for text in selection_texts:
+        try:
+            el = driver.find_element(By.XPATH, f"//*[contains(text(), '{text}')]")
+            if el.is_displayed():
+                logger.info("Found selection option: '%s'. Clicking it.", text)
+                try:
+                    el.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", el)
+                time.sleep(5)
+                break
+        except NoSuchElementException:
+            continue
+
+    # 2. Check if the recovery phone input field is present
+    phone_selectors = [
+        'input[type="tel"]',
+        'input[id*="phone"]',
+        'input[name*="phone"]',
+        'input[name*="phoneNumber"]',
+        'input[autocomplete*="phone"]'
+    ]
+    
+    phone_field = None
+    for sel in phone_selectors:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            if el.is_displayed():
+                # Make sure it's not the TOTP input field or code field
+                if "code" not in (el.get_attribute("id") or "").lower() and "totp" not in (el.get_attribute("id") or "").lower():
+                    phone_field = el
+                    break
+        except NoSuchElementException:
+            continue
+
+    if phone_field:
+        logger.info("Recovery phone input field found. Asking user via Telegram...")
+        
+        # Take a screenshot so the user sees Google's screen
+        screenshot_path = "debug_login_error.png"
+        try:
+            driver.save_screenshot(screenshot_path)
+            logger.info("Saved recovery phone screen screenshot")
+        except Exception as se:
+            logger.warning("Could not save screenshot: %s", se)
+            screenshot_path = None
+
+        # Notify Telegram user
+        import requests
+        import os
+        url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendPhoto"
+        try:
+            if screenshot_path and os.path.exists(screenshot_path):
+                with open(screenshot_path, "rb") as f:
+                    requests.post(url, data={
+                        "chat_id": chat_id,
+                        "caption": "🔒 *Google Verification Required*\n\nGoogle is asking to confirm your recovery phone number.\n\nPlease reply to this message with your *full recovery phone number* (including country code, e.g. `+1234567890`):",
+                        "parse_mode": "Markdown"
+                    }, files={"photo": f}, timeout=15)
+                os.remove(screenshot_path)
+            else:
+                raise Exception("No screenshot available")
+        except Exception as e:
+            logger.warning("Failed to send photo to Telegram: %s. Sending text instead.", e)
+            url_msg = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+            requests.post(url_msg, json={
+                "chat_id": chat_id,
+                "text": "🔒 *Google Verification Required*\n\nGoogle is asking to confirm your recovery phone number.\n\nPlease reply to this message with your *full recovery phone number* (including country code, e.g. `+1234567890`):",
+                "parse_mode": "Markdown"
+            }, timeout=15)
+
+        # Register event and wait
+        import threading
+        event = threading.Event()
+        config.PENDING_INPUTS[chat_id] = {"event": event, "value": None}
+        
+        # Wait up to 90 seconds for user reply
+        success = event.wait(timeout=90)
+        if not success or not config.PENDING_INPUTS[chat_id]["value"]:
+            config.PENDING_INPUTS.pop(chat_id, None)
+            raise GoogleAutomationError("Timeout waiting for recovery phone number.")
+            
+        phone_number = config.PENDING_INPUTS[chat_id]["value"]
+        config.PENDING_INPUTS.pop(chat_id, None)
+        
+        # Type the phone number and click Next
+        phone_field.clear()
+        phone_field.send_keys(phone_number)
+        time.sleep(1)
+        
+        # Find and click Next button
+        next_button = None
+        for sel_btn in ["#phoneNumberNext", "button[type='submit']", "button", "input[type='submit']"]:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel_btn)
+                if el.is_displayed():
+                    next_button = el
+                    break
+            except NoSuchElementException:
+                continue
+                
+        if next_button:
+            try:
+                next_button.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", next_button)
+        else:
+            phone_field.submit()
+            
+        logger.info("Submitted recovery phone number. Waiting for Google...")
+        time.sleep(6)
+        return True
+
+    return False
+
+
+def _handle_sms_code(driver, chat_id) -> bool:
+    # Check if page is asking for an SMS/phone verification code
+    sms_indicators = [
+        "Enter the code", "Enter verification code", "A text message with a verification code",
+        "Введите код", "Введите код подтверждения", "Код подтверждения отправлен",
+        "Enter the 6-digit code", "Enter 6-digit"
+    ]
+    html_content = (driver.page_source or "")
+    is_sms_page = any(ind.lower() in html_content.lower() for ind in sms_indicators)
+    
+    if not is_sms_page:
+        return False
+        
+    sms_selectors = [
+        'input[id*="code"]',
+        'input[id*="pin"]',
+        'input[autocomplete="one-time-code"]',
+        'input[type="tel"]'
+    ]
+    
+    sms_field = None
+    for sel in sms_selectors:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            if el.is_displayed():
+                sms_field = el
+                break
+        except NoSuchElementException:
+            continue
+            
+    if sms_field:
+        logger.info("SMS/Verification code input field found. Asking user via Telegram...")
+        
+        # Take a screenshot
+        screenshot_path = "debug_login_error.png"
+        try:
+            driver.save_screenshot(screenshot_path)
+            logger.info("Saved SMS verification screen screenshot")
+        except Exception as se:
+            logger.warning("Could not save screenshot: %s", se)
+            screenshot_path = None
+
+        # Notify Telegram user
+        import requests
+        import os
+        url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendPhoto"
+        try:
+            if screenshot_path and os.path.exists(screenshot_path):
+                with open(screenshot_path, "rb") as f:
+                    requests.post(url, data={
+                        "chat_id": chat_id,
+                        "caption": "💬 *Google Verification Code Sent*\n\nGoogle has sent a verification code to your phone.\n\nPlease reply to this message with the *verification code* (e.g. `G-123456` or just the numbers):",
+                        "parse_mode": "Markdown"
+                    }, files={"photo": f}, timeout=15)
+                os.remove(screenshot_path)
+            else:
+                raise Exception("No screenshot available")
+        except Exception as e:
+            logger.warning("Failed to send photo to Telegram: %s. Sending text instead.", e)
+            url_msg = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+            requests.post(url_msg, json={
+                "chat_id": chat_id,
+                "text": "💬 *Google Verification Code Sent*\n\nGoogle has sent a verification code to your phone.\n\nPlease reply to this message with the *verification code* (e.g. `G-123456` or just the numbers):",
+                "parse_mode": "Markdown"
+            }, timeout=15)
+
+        # Register event and wait
+        import threading
+        event = threading.Event()
+        config.PENDING_INPUTS[chat_id] = {"event": event, "value": None}
+        
+        # Wait up to 90 seconds for user reply
+        success = event.wait(timeout=90)
+        if not success or not config.PENDING_INPUTS[chat_id]["value"]:
+            config.PENDING_INPUTS.pop(chat_id, None)
+            raise GoogleAutomationError("Timeout waiting for SMS verification code.")
+            
+        code = config.PENDING_INPUTS[chat_id]["value"]
+        config.PENDING_INPUTS.pop(chat_id, None)
+        
+        # Clean up code format if user included G-
+        if code.lower().startswith("g-"):
+            code = code[2:]
+        
+        # Type the code and submit
+        sms_field.clear()
+        sms_field.send_keys(code)
+        time.sleep(1)
+        
+        # Find and click Next button
+        next_button = None
+        for sel_btn in ["#idvPreregisteredPhoneNext", "button[type='submit']", "button", "input[type='submit']"]:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel_btn)
+                if el.is_displayed():
+                    next_button = el
+                    break
+            except NoSuchElementException:
+                continue
+                
+        if next_button:
+            try:
+                next_button.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", next_button)
+        else:
+            sms_field.submit()
+            
+        logger.info("Submitted SMS code. Waiting for Google...")
+        time.sleep(6)
+        return True
+        
+    return False
+
+
+def _do_login(driver, email, password, totp_key="", chat_id=0):
     from urllib.parse import urlparse
     driver.get(config.GMAIL_LOGIN_URL)
     time.sleep(4)
@@ -178,6 +419,16 @@ def _do_login(driver, email, password, totp_key=""):
             logger.warning("TOTP: %s", e)
 
     time.sleep(3)
+
+    # Handle recovery phone or SMS code challenges if they appear
+    if chat_id:
+        for _ in range(3):
+            if _handle_recovery_phone(driver, chat_id):
+                continue
+            if _handle_sms_code(driver, chat_id):
+                continue
+            break
+
     hostname = urlparse(driver.current_url).hostname or ""
     if any(h in hostname for h in ["myaccount.google.com", "one.google.com", "mail.google.com"]):
         return True
@@ -397,7 +648,7 @@ class GoogleAutomationError(Exception):
 
 
 def check_gemini_offer(email: str, password: str, device: DeviceProfile,
-                       totp_key: str = "") -> Optional[str]:
+                       totp_key: str = "", chat_id: int = 0) -> Optional[str]:
     """
     Login + find Gemini Pro offer. Runs with 90s timeout.
     """
@@ -405,7 +656,7 @@ def check_gemini_offer(email: str, password: str, device: DeviceProfile,
     try:
         driver = _build_driver(device, email)
 
-        if not _do_login(driver, email, password, totp_key):
+        if not _do_login(driver, email, password, totp_key, chat_id):
             try:
                 driver.save_screenshot("debug_login_error.png")
                 logger.info("Saved debug screenshot to debug_login_error.png")
@@ -426,6 +677,8 @@ def check_gemini_offer(email: str, password: str, device: DeviceProfile,
                 logger.warning("Could not save screenshot: %s", se)
         raise
     finally:
+        if chat_id:
+            config.PENDING_INPUTS.pop(chat_id, None)
         if driver:
             try:
                 driver.quit()

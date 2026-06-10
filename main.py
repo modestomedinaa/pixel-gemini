@@ -215,11 +215,13 @@ async def check_offer(update: Update,
     )
 
     try:
-        offer_link = check_gemini_offer(
+        offer_link = await asyncio.to_thread(
+            check_gemini_offer,
             session["email"],
             session["password"],
             device,
             session.get("totp_key", ""),
+            chat_id,
         )
     except Exception as exc:
         import os
@@ -357,6 +359,24 @@ def start_health_check_server():
     thread.start()
 
 
+async def handle_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle interactive user inputs (like recovery phone or verification codes) while automation is running."""
+    chat_id = update.effective_chat.id
+    if chat_id in config.PENDING_INPUTS:
+        user_input = update.message.text.strip()
+        
+        # Delete the user's input message for privacy/security
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+            
+        config.PENDING_INPUTS[chat_id]["value"] = user_input
+        config.PENDING_INPUTS[chat_id]["event"].set()
+        await update.message.reply_text("⏳ Processing verification input, please wait...")
+        return
+
+
 # ── Application setup ─────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -400,6 +420,9 @@ def main() -> None:
     app.add_handler(CommandHandler("check_offer", check_offer))
     app.add_handler(CommandHandler("get_link", get_link))
     app.add_handler(CommandHandler("status", status))
+    
+    # Text message handler to intercept verification replies (group=-1 runs first)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_reply), group=-1)
 
     logger.info("Bot is running. Press Ctrl-C to stop.")
     app.run_polling(
