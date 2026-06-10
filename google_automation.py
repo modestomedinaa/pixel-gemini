@@ -49,6 +49,15 @@ def _build_driver(profile: DeviceProfile, email: str) -> webdriver.Chrome:
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--window-size=390,844")
     options.add_argument(f"--user-agent={profile.user_agent}")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-sync")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-service-autorun")
+    options.add_argument("--password-store=basic")
+    options.add_argument("--disable-features=Translate,SafeBrowsing")
+    options.add_argument("--js-flags=--max-old-space-size=512")
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option("useAutomationExtension", False)
     options.add_experimental_option("mobileEmulation", {
@@ -1097,7 +1106,17 @@ def check_gemini_offer(email: str, password: str, device: DeviceProfile,
                 logger.info("Saved debug screenshot on exception to debug_login_error.png")
             except Exception as se:
                 logger.warning("Could not save screenshot: %s", se)
-        raise
+        
+        if isinstance(exc, GoogleAutomationError):
+            raise exc
+            
+        exc_str = str(exc)
+        if any(msg in exc_str or msg in type(exc).__name__ for msg in ["Remote end closed connection", "Connection aborted", "ProtocolError", "MaxRetryError", "chrome not reachable", "disconnected"]):
+            raise GoogleAutomationError(
+                "The browser crashed or the connection was lost. This is usually caused by low system memory (RAM)."
+            ) from exc
+            
+        raise GoogleAutomationError(f"Automation error: {exc}") from exc
     finally:
         if chat_id:
             config.PENDING_INPUTS.pop(chat_id, None)
